@@ -22,36 +22,122 @@ const (
 	// Template used to build the Redis configuration
 	redisConfigTemplate = `slaveof 127.0.0.1 {{.Spec.Redis.Port}}
 port {{.Spec.Redis.Port}}
+maxmemory {{.Spec.Redis.MaxMemory}}
+logfile /log/redis.log
 tcp-keepalive 60
 save 900 1
 save 300 10
 user pinger -@all +ping on >pingpass
+rename-command keys ""
+rename-command flushall ""
+rename-command flushdb ""
+rename-command debug ""
+rename-command shutdown ""
 {{- range .Spec.Redis.CustomCommandRenames}}
 rename-command "{{.From}}" "{{.To}}"
 {{- end}}
 `
 
-	sentinelConfigTemplate = `sentinel monitor mymaster 127.0.0.1 {{.Spec.Redis.Port}} 2
-sentinel down-after-milliseconds mymaster 1000
-sentinel failover-timeout mymaster 3000
-sentinel parallel-syncs mymaster 2`
+	sentinelConfigTemplate = `sentinel monitor master0 127.0.0.1 {{.Spec.Redis.Port}} 2
+sentinel down-after-milliseconds master0 1000
+sentinel failover-timeout master0 3000
+sentinel parallel-syncs master0 2
+logfile /log/sentinel.log`
+
+	predixyConfigurationVolumeName     = "predixy-config"
+	predixyConfigurationFileVolumeName = "predixy-file-config"
+
+	predixyConfigTemplate = `Name predixy
+Bind 0.0.0.0:12120
+WorkerThreads 12
+MaxMemory 1G
+ClientTimeout 300
+Log /home/predixy/logs/predixy.log
+LogRotate 1d
+LogVerbSample 0
+LogDebugSample 0
+LogInfoSample 10000
+LogNoticeSample 0
+LogWarnSample 1
+LogErrorSample 1
+Include sentinel.conf
+Include auth.conf`
+
+	predixySentinelConfigTemplate = `SentinelServerPool {
+    Databases 16
+    Hash crc16
+    HashTag "{}"
+    Distribution modula
+    MasterReadPriority 60
+    StaticSlaveReadPriority 50
+    DynamicSlaveReadPriority 50
+    RefreshInterval 1
+    ServerTimeout 1
+    ServerFailureLimit 10
+    ServerRetryTimeout 1
+    KeepAlive 120
+    Password {{ .RedisPassword }}
+    Sentinels {
+    {{- range .SentinelIPs }}
+        + {{ . }}:26379
+    {{- end }}
+    }
+    Group master0 {
+    }
+}`
+
+	predixyAuthConfigTemplate = `Authority {
+    Auth pingpass {
+        Mode read
+    }
+    Auth {{ .ReadPassword }} {
+        Mode read
+    }
+    Auth {{ .RedisPassword }} {
+        Mode write
+    }
+    Auth {{ .AdminPassword }} {
+        Mode admin
+    }
+}`
 
 	redisShutdownConfigurationVolumeName   = "redis-shutdown-config"
 	redisStartupConfigurationVolumeName    = "redis-startup-config"
 	redisReadinessVolumeName               = "redis-readiness-config"
 	redisStorageVolumeName                 = "redis-data"
+	redisLogVolumeName                     = "redis-log"
 	sentinelStartupConfigurationVolumeName = "sentinel-startup-config"
+	sentinelLogVolumeName                  = "sentinel-log"
+	predixyLogVolumeName                   = "predixy-log"
+
+	predixyAdminPassword = "VtBI2HaapLReP5EPtR1s"
+	predixyReadPassword  = "fNWdS38Sm8LK490nTV1K"
+	predixyFileMountPath = "/tmp"
+	predixyMountPath     = "/home/predixy/conf"
 
 	graceTime = 30
+)
+
+var predixyPort int = 12120
+
+var (
+	defaultRedisLogPath    = "/home/redisfailover/%s/redis"
+	defaultSentinelLogPath = "/home/redisfailover/%s/sentinel"
+	defaultPredixyLogPath  = "/home/redisfailover/%s/predixy"
 )
 
 func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.Service {
 	name := GetSentinelName(rf)
 	namespace := rf.Namespace
 
-	sentinelTargetPort := intstr.FromInt(26379)
 	selectorLabels := generateSelectorLabels(sentinelRoleName, rf.Name)
 	labels = util.MergeLabels(labels, selectorLabels)
+	defaultAnnotations := map[string]string{
+		"prometheus.io/scrape": "true",
+		"prometheus.io/port":   "http",
+		"prometheus.io/path":   "/metrics",
+	}
+	annotations := util.MergeLabels(defaultAnnotations, rf.Spec.Sentinel.ServiceAnnotations)
 
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -59,16 +145,17 @@ func generateSentinelService(rf *redisfailoverv1.RedisFailover, labels map[strin
 			Namespace:       namespace,
 			Labels:          labels,
 			OwnerReferences: ownerRefs,
-			Annotations:     rf.Spec.Sentinel.ServiceAnnotations,
+			Annotations:     annotations,
 		},
 		Spec: corev1.ServiceSpec{
-			Selector: selectorLabels,
+			Type:      corev1.ServiceTypeClusterIP,
+			ClusterIP: corev1.ClusterIPNone,
+			Selector:  selectorLabels,
 			Ports: []corev1.ServicePort{
 				{
-					Name:       "sentinel",
-					Port:       26379,
-					TargetPort: sentinelTargetPort,
-					Protocol:   "TCP",
+					Name:     exporterPortName,
+					Port:     sentinelExporterPort,
+					Protocol: corev1.ProtocolTCP,
 				},
 			},
 		},
@@ -182,9 +269,9 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	rfName := strings.Replace(strings.ToUpper(rf.Name), "-", "_", -1)
 
 	labels = util.MergeLabels(labels, generateSelectorLabels(redisRoleName, rf.Name))
-	shutdownContent := fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name mymaster | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
+	shutdownContent := fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name master0 | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 if [ "$master" = "$(hostname -i)" ]; then
-  redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover mymaster
+  redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover master0
   sleep 31
 fi
 cmd="redis-cli -p %[2]v"
@@ -270,6 +357,7 @@ esac`, port)
 func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *appsv1.StatefulSet {
 	name := GetRedisName(rf)
 	namespace := rf.Namespace
+	fmt.Println("Redis    Service Name: ", name)
 
 	redisCommand := getRedisCommand(rf)
 	selectorLabels := generateSelectorLabels(redisRoleName, rf.Name)
@@ -429,10 +517,11 @@ func generateRedisStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[stri
 	return ss
 }
 
-func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *appsv1.Deployment {
+func generateSentinelStatefulSet(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *appsv1.StatefulSet {
 	name := GetSentinelName(rf)
 	configMapName := GetSentinelName(rf)
 	namespace := rf.Namespace
+	fmt.Println("Sentinel Service Name: ", name)
 
 	sentinelCommand := getSentinelCommand(rf)
 	selectorLabels := generateSelectorLabels(sentinelRoleName, rf.Name)
@@ -441,15 +530,20 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 	volumeMounts := getSentinelVolumeMounts(rf)
 	volumes := getSentinelVolumes(rf, configMapName)
 
-	sd := &appsv1.Deployment{
+	ss := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:            name,
 			Namespace:       namespace,
 			Labels:          labels,
 			OwnerReferences: ownerRefs,
 		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: &rf.Spec.Sentinel.Replicas,
+		Spec: appsv1.StatefulSetSpec{
+			ServiceName: name,
+			Replicas:    &rf.Spec.Sentinel.Replicas,
+			UpdateStrategy: appsv1.StatefulSetUpdateStrategy{
+				Type: appsv1.OnDeleteStatefulSetStrategyType,
+			},
+			PodManagementPolicy: appsv1.ParallelPodManagement,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: selectorLabels,
 			},
@@ -553,7 +647,7 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 	}
 
 	if rf.Spec.Sentinel.StartupConfigMap != "" {
-		sd.Spec.Template.Spec.Containers[0].StartupProbe = &corev1.Probe{
+		ss.Spec.Template.Spec.Containers[0].StartupProbe = &corev1.Probe{
 			InitialDelaySeconds: graceTime,
 			TimeoutSeconds:      5,
 			FailureThreshold:    6,
@@ -568,17 +662,17 @@ func generateSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[st
 
 	if rf.Spec.Sentinel.Exporter.Enabled {
 		exporter := createSentinelExporterContainer(rf)
-		sd.Spec.Template.Spec.Containers = append(sd.Spec.Template.Spec.Containers, exporter)
+		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, exporter)
 	}
 	if rf.Spec.Sentinel.InitContainers != nil {
-		sd.Spec.Template.Spec.InitContainers = append(sd.Spec.Template.Spec.InitContainers, rf.Spec.Sentinel.InitContainers...)
+		ss.Spec.Template.Spec.InitContainers = append(ss.Spec.Template.Spec.InitContainers, rf.Spec.Sentinel.InitContainers...)
 	}
 
 	if rf.Spec.Sentinel.ExtraContainers != nil {
-		sd.Spec.Template.Spec.Containers = append(sd.Spec.Template.Spec.Containers, rf.Spec.Sentinel.ExtraContainers...)
+		ss.Spec.Template.Spec.Containers = append(ss.Spec.Template.Spec.Containers, rf.Spec.Sentinel.ExtraContainers...)
 	}
 
-	return sd
+	return ss
 }
 
 func generatePodDisruptionBudget(name string, namespace string, labels map[string]string, ownerRefs []metav1.OwnerReference, minAvailable intstr.IntOrString) *policyv1.PodDisruptionBudget {
@@ -735,8 +829,8 @@ func getContainerSecurityContext(secctx *corev1.SecurityContext) *corev1.Securit
 		},
 	}
 	privileged := false
-	defaultUserAndGroup := int64(1000)
-	runAsNonRoot := true
+	defaultUserAndGroup := int64(0)
+	runAsNonRoot := false
 	allowPrivilegeEscalation := false
 	readOnlyRootFilesystem := true
 
@@ -780,6 +874,10 @@ func getRedisVolumeMounts(rf *redisfailoverv1.RedisFailover) []corev1.VolumeMoun
 			Name:      getRedisDataVolumeName(rf),
 			MountPath: "/data",
 		},
+		{
+			Name:      redisLogVolumeName,
+			MountPath: "/log",
+		},
 	}
 
 	if rf.Spec.Redis.StartupConfigMap != "" {
@@ -804,6 +902,10 @@ func getSentinelVolumeMounts(rf *redisfailoverv1.RedisFailover) []corev1.VolumeM
 			Name:      "sentinel-config-writable",
 			MountPath: "/redis",
 		},
+		{
+			Name:      sentinelLogVolumeName,
+			MountPath: "/log",
+		},
 	}
 
 	if rf.Spec.Sentinel.StartupConfigMap != "" {
@@ -824,6 +926,13 @@ func getRedisVolumes(rf *redisfailoverv1.RedisFailover) []corev1.Volume {
 	configMapName := GetRedisName(rf)
 	shutdownConfigMapName := GetRedisShutdownConfigMapName(rf)
 	readinessConfigMapName := GetRedisReadinessName(rf)
+
+	hostPath := fmt.Sprintf(defaultRedisLogPath, rf.Name)
+	if rf.Spec.Redis.StoragePath != "" {
+		hostPath = rf.Spec.Redis.StoragePath
+	}
+
+	pathType := corev1.HostPathDirectoryOrCreate
 
 	executeMode := int32(0744)
 	volumes := []corev1.Volume{
@@ -856,6 +965,15 @@ func getRedisVolumes(rf *redisfailoverv1.RedisFailover) []corev1.Volume {
 						Name: readinessConfigMapName,
 					},
 					DefaultMode: &executeMode,
+				},
+			},
+		},
+		{
+			Name: redisLogVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Type: &pathType,
+					Path: hostPath,
 				},
 			},
 		},
@@ -892,6 +1010,12 @@ func getRedisVolumes(rf *redisfailoverv1.RedisFailover) []corev1.Volume {
 func getSentinelVolumes(rf *redisfailoverv1.RedisFailover, configMapName string) []corev1.Volume {
 	executeMode := int32(0744)
 
+	hostPath := fmt.Sprintf(defaultSentinelLogPath, rf.Name)
+	if rf.Spec.Sentinel.StoragePath != "" {
+		hostPath = rf.Spec.Sentinel.StoragePath
+	}
+	pathType := corev1.HostPathDirectoryOrCreate
+
 	volumes := []corev1.Volume{
 		{
 			Name: "sentinel-config",
@@ -907,6 +1031,15 @@ func getSentinelVolumes(rf *redisfailoverv1.RedisFailover, configMapName string)
 			Name: "sentinel-config-writable",
 			VolumeSource: corev1.VolumeSource{
 				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		{
+			Name: sentinelLogVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Type: &pathType,
+					Path: hostPath,
+				},
 			},
 		},
 	}
@@ -989,6 +1122,13 @@ func getSentinelCommand(rf *redisfailoverv1.RedisFailover) []string {
 	}
 }
 
+func getPredixyCommand(rf *redisfailoverv1.RedisFailover) []string {
+	return []string{
+		"/home/predixy/bin/predixy",
+		"/home/predixy/conf/predixy.conf",
+	}
+}
+
 func pullPolicy(specPolicy corev1.PullPolicy) corev1.PullPolicy {
 	if specPolicy == "" {
 		return corev1.PullAlways
@@ -1060,4 +1200,367 @@ func getRedisEnv(rf *redisfailoverv1.RedisFailover) []corev1.EnvVar {
 	}
 
 	return env
+}
+
+func generatePredixyConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference, sentinels []string, password string) *corev1.ConfigMap {
+	name := GetPredixyName(rf)
+	namespace := rf.Namespace
+	fmt.Println("Predixy  Service Name: ", name)
+
+	labels = util.MergeLabels(labels, generateSelectorLabels(predixyRoleName, rf.Name))
+
+	type PredixConf struct {
+		SentinelIPs   []string
+		ReadPassword  string
+		AdminPassword string
+		RedisPassword string
+	}
+
+	conf := PredixConf{
+		SentinelIPs:   sentinels,
+		ReadPassword:  predixyReadPassword,
+		AdminPassword: predixyAdminPassword,
+		RedisPassword: password,
+	}
+
+	// sentinel.conf
+	tmpl, err := template.New("predixySentinelConf").Parse(predixySentinelConfigTemplate)
+	if err != nil {
+		panic(err)
+	}
+
+	var tplOutput bytes.Buffer
+	if err := tmpl.Execute(&tplOutput, conf); err != nil {
+		panic(err)
+	}
+	predixySentinelConfFileContent := tplOutput.String()
+
+	// auth.conf
+	authTmpl, err := template.New("predixyAuthConf").Parse(predixyAuthConfigTemplate)
+	if err != nil {
+		panic(err)
+	}
+
+	var authTplOutput bytes.Buffer
+	if err := authTmpl.Execute(&authTplOutput, conf); err != nil {
+		panic(err)
+	}
+	predixyAuthConfFileContent := authTplOutput.String()
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			Labels:          labels,
+			OwnerReferences: ownerRefs,
+		},
+		Data: map[string]string{
+			"predixy.conf":  predixyConfigTemplate,
+			"sentinel.conf": predixySentinelConfFileContent,
+			"auth.conf":     predixyAuthConfFileContent,
+		},
+	}
+}
+
+func generatePredixyService(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *corev1.Service {
+	name := GetPredixyName(rf)
+	namespace := rf.Namespace
+
+	predixyTargetPort := intstr.FromInt(predixyPort)
+	selectorLabels := generateSelectorLabels(predixyRoleName, rf.Name)
+	labels = util.MergeLabels(labels, selectorLabels)
+	defaultAnnotations := map[string]string{
+		"prometheus.io/scrape": "true",
+		"prometheus.io/port":   "http",
+		"prometheus.io/path":   "/metrics",
+	}
+
+	ps := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			Labels:          labels,
+			OwnerReferences: ownerRefs,
+			Annotations:     defaultAnnotations,
+		},
+		Spec: corev1.ServiceSpec{
+			Selector: selectorLabels,
+			Ports: []corev1.ServicePort{
+				{
+					Name:       "predixy",
+					Port:       int32(predixyPort),
+					TargetPort: predixyTargetPort,
+					Protocol:   corev1.ProtocolTCP,
+				},
+			},
+		},
+	}
+
+	if rf.Spec.Predixy.Exporter.Enabled {
+		exporter := corev1.ServicePort{
+			Name:     exporterPortName,
+			Port:     predixyExporterPort,
+			Protocol: corev1.ProtocolTCP,
+		}
+		ps.Spec.Ports = append(ps.Spec.Ports, exporter)
+	}
+	return ps
+}
+
+func generatePredixyDeployments(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) *appsv1.Deployment {
+	name := GetPredixyName(rf)
+	namespace := rf.Namespace
+
+	volumes := getPredixyVolumes(rf)
+	predixyCommand := getPredixyCommand(rf)
+	selectorLabels := generateSelectorLabels(predixyRoleName, rf.Name)
+	labels = util.MergeLabels(labels, selectorLabels)
+
+	var (
+		predixyName                         = "predixy"
+		terminationGracePeriodSeconds int64 = 30
+	)
+
+	rate := intstr.IntOrString{
+		Type:   intstr.String,
+		StrVal: "25%",
+	}
+
+	pd := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            name,
+			Namespace:       namespace,
+			Labels:          labels,
+			OwnerReferences: ownerRefs,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &rf.Spec.Predixy.Replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: selectorLabels,
+			},
+			Strategy: appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxSurge:       &rate,
+					MaxUnavailable: &rate,
+				},
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      labels,
+					Annotations: rf.Spec.Predixy.PodAnnotations,
+				},
+				Spec: corev1.PodSpec{
+					Affinity:                      getAffinity(nil, labels),
+					NodeSelector:                  rf.Spec.Predixy.NodeSelector,
+					SecurityContext:               getSecurityContext(nil),
+					DNSPolicy:                     getDnsPolicy(""),
+					ImagePullSecrets:              rf.Spec.Predixy.ImagePullSecrets,
+					Volumes:                       volumes,
+					TerminationGracePeriodSeconds: &terminationGracePeriodSeconds,
+					InitContainers: []corev1.Container{
+						{
+							Name:            "predixy-config-copy",
+							Image:           rf.Spec.Predixy.Image,
+							ImagePullPolicy: pullPolicy(rf.Spec.Predixy.ImagePullPolicy),
+							SecurityContext: getPredixySecurityContext(),
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      predixyConfigurationFileVolumeName,
+									MountPath: predixyFileMountPath,
+								},
+								{
+									Name:      predixyConfigurationVolumeName,
+									MountPath: predixyMountPath,
+								},
+							},
+							Command: []string{
+								"cp",
+								fmt.Sprintf("%s/predixy.conf", predixyFileMountPath),
+								fmt.Sprintf("%s/sentinel.conf", predixyFileMountPath),
+								fmt.Sprintf("%s/auth.conf", predixyFileMountPath),
+								predixyMountPath,
+							},
+							Resources: corev1.ResourceRequirements{
+								Limits: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("10m"),
+									corev1.ResourceMemory: resource.MustParse("32Mi"),
+								},
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("10m"),
+									corev1.ResourceMemory: resource.MustParse("32Mi"),
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:            predixyName,
+							Image:           rf.Spec.Predixy.Image,
+							ImagePullPolicy: pullPolicy(rf.Spec.Predixy.ImagePullPolicy),
+							SecurityContext: getPredixySecurityContext(),
+							Ports: []corev1.ContainerPort{
+								{
+									Name:          predixyName,
+									ContainerPort: int32(predixyPort),
+									Protocol:      corev1.ProtocolTCP,
+								},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{
+									Name:      predixyConfigurationVolumeName,
+									MountPath: predixyMountPath,
+								},
+								{
+									Name:      predixyLogVolumeName,
+									MountPath: "/home/predixy/logs",
+								},
+							},
+							Command:   predixyCommand,
+							Resources: rf.Spec.Predixy.Resources,
+							ReadinessProbe: &corev1.Probe{
+								InitialDelaySeconds: graceTime,
+								TimeoutSeconds:      5,
+								ProbeHandler: corev1.ProbeHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{
+											"sh",
+											"-c",
+											fmt.Sprintf("redis-cli -h $(hostname) -p %d -a pingpass ping", predixyPort),
+										},
+									},
+								},
+							},
+							LivenessProbe: &corev1.Probe{
+								InitialDelaySeconds: graceTime,
+								TimeoutSeconds:      5,
+								ProbeHandler: corev1.ProbeHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{
+											"sh",
+											"-c",
+											fmt.Sprintf("redis-cli -h $(hostname) -p %d -a pingpass ping", predixyPort),
+										},
+									},
+								},
+							},
+							Lifecycle: &corev1.Lifecycle{
+								PreStop: &corev1.LifecycleHandler{
+									Exec: &corev1.ExecAction{
+										Command: []string{"/bin/sh", "-c", "sleep 30"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if rf.Spec.Predixy.Exporter.Enabled {
+		exporter := createPredixyExporterContainer(rf)
+		pd.Spec.Template.Spec.Containers = append(pd.Spec.Template.Spec.Containers, exporter)
+	}
+
+	return pd
+}
+
+func getPredixyVolumes(rf *redisfailoverv1.RedisFailover) []corev1.Volume {
+	configMapName := GetPredixyName(rf)
+
+	hostPath := fmt.Sprintf(defaultPredixyLogPath, rf.Name)
+	if rf.Spec.Predixy.StoragePath != "" {
+		hostPath = rf.Spec.Predixy.StoragePath
+	}
+
+	pathType := corev1.HostPathDirectoryOrCreate
+	volumes := []corev1.Volume{
+		{
+			Name: predixyConfigurationFileVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: configMapName,
+					},
+				},
+			},
+		},
+		{
+			Name: predixyConfigurationVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+		{
+			Name: predixyLogVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Type: &pathType,
+					Path: hostPath,
+				},
+			},
+		},
+	}
+	return volumes
+}
+
+func getPredixySecurityContext() *corev1.SecurityContext {
+	capabilities := &corev1.Capabilities{
+		Add: []corev1.Capability{"SYS_ADMIN", "SYS_PTRACE"},
+	}
+
+	privileged := false
+	defaultUserAndGroup := int64(0)
+	runAsNonRoot := false
+	allowPrivilegeEscalation := false
+	readOnlyRootFilesystem := true
+
+	return &corev1.SecurityContext{
+		Capabilities:             capabilities,
+		Privileged:               &privileged,
+		RunAsUser:                &defaultUserAndGroup,
+		RunAsGroup:               &defaultUserAndGroup,
+		RunAsNonRoot:             &runAsNonRoot,
+		ReadOnlyRootFilesystem:   &readOnlyRootFilesystem,
+		AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+	}
+}
+
+func createPredixyExporterContainer(rf *redisfailoverv1.RedisFailover) corev1.Container {
+	resources := exporterDefaultResourceRequirements
+	if rf.Spec.Predixy.Exporter.Resources != nil {
+		resources = *rf.Spec.Predixy.Exporter.Resources
+	}
+
+	predixyEnv := corev1.EnvVar{
+		Name: "PREDIXY_PASSWORD",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: rf.Spec.Auth.SecretPath,
+				},
+				Key: "password",
+			},
+		},
+	}
+	envs := append(rf.Spec.Predixy.Exporter.Env, predixyEnv)
+
+	container := corev1.Container{
+		Name:            predixyExporterContainerName,
+		Image:           rf.Spec.Predixy.Exporter.Image,
+		ImagePullPolicy: pullPolicy(rf.Spec.Predixy.Exporter.ImagePullPolicy),
+		SecurityContext: getContainerSecurityContext(rf.Spec.Predixy.Exporter.ContainerSecurityContext),
+		Args:            append(rf.Spec.Predixy.Exporter.Args, "-name", rf.Name),
+		Env:             envs,
+		Ports: []corev1.ContainerPort{
+			{
+				Name:          "metrics",
+				ContainerPort: predixyExporterPort,
+				Protocol:      corev1.ProtocolTCP,
+			},
+		},
+		Resources: resources,
+	}
+	return container
 }

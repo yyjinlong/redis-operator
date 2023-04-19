@@ -22,11 +22,13 @@ type RedisFailover struct {
 
 // RedisFailoverSpec represents a Redis failover spec
 type RedisFailoverSpec struct {
+	Sharding       int                `json:"sharding,omitempty"`
 	Redis          RedisSettings      `json:"redis,omitempty"`
 	Sentinel       SentinelSettings   `json:"sentinel,omitempty"`
 	Auth           AuthSettings       `json:"auth,omitempty"`
 	LabelWhitelist []string           `json:"labelWhitelist,omitempty"`
 	BootstrapNode  *BootstrapSettings `json:"bootstrapNode,omitempty"`
+	Predixy        PredixySettings    `json:"predixy,omitempty"`
 }
 
 // RedisCommandRename defines the specification of a "rename-command" configuration option
@@ -42,6 +44,7 @@ type RedisSettings struct {
 	Replicas                      int32                             `json:"replicas,omitempty"`
 	Port                          int32                             `json:"port,omitempty"`
 	Resources                     corev1.ResourceRequirements       `json:"resources,omitempty"`
+	MaxMemory                     string                            `json:"maxmemory,omitempty"`
 	CustomConfig                  []string                          `json:"customConfig,omitempty"`
 	CustomCommandRenames          []RedisCommandRename              `json:"customCommandRenames,omitempty"`
 	Command                       []string                          `json:"command,omitempty"`
@@ -67,6 +70,7 @@ type RedisSettings struct {
 	TerminationGracePeriodSeconds int64                             `json:"terminationGracePeriod,omitempty"`
 	ExtraVolumes                  []corev1.Volume                   `json:"extraVolumes,omitempty"`
 	ExtraVolumeMounts             []corev1.VolumeMount              `json:"extraVolumeMounts,omitempty"`
+	StoragePath                   string                            `json:"storagePath,omitempty"` // stroage path on the host
 }
 
 // SentinelSettings defines the specification of the sentinel cluster
@@ -97,6 +101,7 @@ type SentinelSettings struct {
 	ServiceAccountName        string                            `json:"serviceAccountName,omitempty"`
 	ExtraVolumes              []corev1.Volume                   `json:"extraVolumes,omitempty"`
 	ExtraVolumeMounts         []corev1.VolumeMount              `json:"extraVolumeMounts,omitempty"`
+	StoragePath               string                            `json:"storagePath,omitempty"` // stroage path on the host
 }
 
 // AuthSettings contains settings about auth
@@ -109,6 +114,19 @@ type BootstrapSettings struct {
 	Host           string `json:"host,omitempty"`
 	Port           string `json:"port,omitempty"`
 	AllowSentinels bool   `json:"allowSentinels,omitempty"`
+}
+
+// PredixySettings defines the specification of the predixy cluster
+type PredixySettings struct {
+	Image            string                        `json:"image,omitempty"`
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
+	ImagePullPolicy  corev1.PullPolicy             `json:"imagePullPolicy,omitempty"`
+	Resources        corev1.ResourceRequirements   `json:"resources,omitempty"`
+	Replicas         int32                         `json:"replicas,omitempty"`
+	Exporter         Exporter                      `json:"exporter,omitempty"`
+	PodAnnotations   map[string]string             `json:"podAnnotations,omitempty"` // Realize fixed ip through annotations in kubeovn environment
+	StoragePath      string                        `json:"storagePath,omitempty"`    // stroage path on the host
+	NodeSelector     map[string]string             `json:"nodeSelector,omitempty"`
 }
 
 // Exporter defines the specification for the redis/sentinel exporter

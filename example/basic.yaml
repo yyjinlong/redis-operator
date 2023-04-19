@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-auth-thor
+type: Opaque
+data:
+  password: aGVsbG8=
+---
+apiVersion: databases.spotahome.com/v1
+kind: RedisFailover
+metadata:
+  name: redis-thor
+spec:
+  auth:
+    secretPath: redis-auth-thor
+  sharding: 1
+  redis:
+    replicas: 3
+    maxmemory: 1gb
+    image: 10.12.28.4:80/run/redis-alpine:1.0.0
+    imagePullSecrets:
+    - name: harborkey
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 100m
+        memory: 100Mi
+      limits:
+        cpu: 400m
+        memory: 500Mi
+  sentinel:
+    replicas: 3
+    image: 10.12.28.4:80/run/redis-alpine:1.0.0
+    imagePullSecrets:
+    - name: harborkey
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 100m
+      limits:
+        memory: 100Mi
+  predixy:
+    replicas: 3
+    image: 10.12.28.4:80/run/predixy:1.2.0
+    imagePullSecrets:
+    - name: harborkey
+    imagePullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 100m
+        memory: 300Mi
+      limits:
+        cpu: 500m
+        memory: 1024Mi

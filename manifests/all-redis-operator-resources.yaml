@@ -4,6 +4,7 @@ metadata:
   labels:
     app: redisoperator
   name: redisoperator
+  namespace: redis-system
 spec:
   replicas: 1
   selector:
@@ -17,8 +18,10 @@ spec:
         app: redisoperator
     spec:
       serviceAccountName: redisoperator
+      imagePullSecrets:
+      - name: harborkey
       containers:
-        - image: quay.io/spotahome/redis-operator:latest
+        - image: 10.12.28.4:80/service/redis-operator:1.1.1
           imagePullPolicy: IfNotPresent
           name: app
           securityContext:
@@ -38,6 +41,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: redisoperator
+  namespace: redis-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -45,12 +49,13 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: redisoperator
-    namespace: default
+    namespace: redis-system
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   name: redisoperator
+  namespace: redis-system
 rules:
   - apiGroups:
       - databases.spotahome.com
@@ -108,18 +113,20 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: redisoperator
+  namespace: redis-system
 ---
 
 apiVersion: v1
 kind: Service
 metadata:
+  name: redisoperator
+  namespace: redis-system
+  labels:
+    app: redisoperator
   annotations:
     prometheus.io/path: /metrics
     prometheus.io/port: http
     prometheus.io/scrape: "true"
-  name: redisoperator
-  labels:
-    app: redisoperator
 spec:
   type: ClusterIP
   ports:
@@ -135,6 +142,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: redis-operator-metrics
+  namespace: redis-system
   labels:
     app: redisoperator
     release: prometheus
@@ -149,11 +157,11 @@ spec:
     - default
 ---
 
-
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
   name: redisoperator
+  namespace: redis-system
   labels:
     app: redisoperator
     release: prometheus

@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"context"
+	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -81,6 +82,7 @@ func (p *ConfigMapService) CreateOrUpdateConfigMap(namespace string, configMap *
 	// namespace is our spec(https://github.com/kubernetes/community/blob/master/contributors/devel/api-conventions.md#concurrency-control-and-consistency),
 	// we will replace the current namespace state.
 	configMap.ResourceVersion = storedConfigMap.ResourceVersion
+	fmt.Println("update configmap resource version: ", configMap.ResourceVersion)
 	return p.UpdateConfigMap(namespace, configMap)
 }
 

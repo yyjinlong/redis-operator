@@ -111,6 +111,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 		if newMasterIP == "" {
 			newMasterIP = pod.Status.PodIP
 			r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Infof("New master is %s with ip %s", pod.Name, newMasterIP)
+			r.logger.Infof("MakeMaster pod %s command: slaveof no one", pod.Name)
 			if err := r.redisClient.MakeMaster(newMasterIP, port, password); err != nil {
 				newMasterIP = ""
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf("Make new master failed, master ip: %s, error: %v", pod.Status.PodIP, err)
@@ -124,7 +125,7 @@ func (r *RedisFailoverHealer) SetOldestAsMaster(rf *redisfailoverv1.RedisFailove
 
 			newMasterIP = pod.Status.PodIP
 		} else {
-			r.logger.Infof("Making pod %s slave of %s", pod.Name, newMasterIP)
+			r.logger.Infof("Making pod %s command: slaveof %s %v", pod.Name, newMasterIP, port)
 			if err := r.redisClient.MakeSlaveOfWithPort(pod.Status.PodIP, newMasterIP, port, password); err != nil {
 				r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Errorf("Make slave failed, slave pod ip: %s, master ip: %s, error: %v", pod.Status.PodIP, newMasterIP, err)
 			}

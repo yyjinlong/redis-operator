@@ -147,9 +147,9 @@ func TestRedisFailover(t *testing.T) {
 	// Redis Failover definition created before.
 	t.Run("Check Redis Statefulset existing and size", clients.testRedisStatefulSet)
 
-	// Check that a Sentinel Deployment is created and the size of it is the one defined by the
+	// Check that a Sentinel StatefulSets is created and the size of it is the one defined by the
 	// Redis Failover definition created before.
-	t.Run("Check Sentinel Deployment existing and size", clients.testSentinelDeployment)
+	t.Run("Check Sentinel Deployment existing and size", clients.testSentinelStatefulset)
 
 	// Connect to all the Redis pods and, asking to the Redis running inside them, check
 	// that only one of them is the master of the failover.
@@ -199,11 +199,11 @@ func (c *clients) testRedisStatefulSet(t *testing.T) {
 	assert.Equal(redisSize, int32(redisSS.Status.Replicas))
 }
 
-func (c *clients) testSentinelDeployment(t *testing.T) {
+func (c *clients) testSentinelStatefulset(t *testing.T) {
 	assert := assert.New(t)
-	sentinelD, err := c.k8sClient.AppsV1().Deployments(namespace).Get(context.Background(), fmt.Sprintf("rfs-%s", name), metav1.GetOptions{})
+	sentinelS, err := c.k8sClient.AppsV1().StatefulSets(namespace).Get(context.Background(), fmt.Sprintf("rfs-%s", name), metav1.GetOptions{})
 	assert.NoError(err)
-	assert.Equal(3, int(sentinelD.Status.Replicas))
+	assert.Equal(3, int(sentinelS.Status.Replicas))
 }
 
 func (c *clients) testRedisMaster(t *testing.T) {
@@ -235,11 +235,11 @@ func (c *clients) testSentinelMonitoring(t *testing.T) {
 	assert := assert.New(t)
 	masters := []string{}
 
-	sentinelD, err := c.k8sClient.AppsV1().Deployments(namespace).Get(context.Background(), fmt.Sprintf("rfs-%s", name), metav1.GetOptions{})
+	sentinelS, err := c.k8sClient.AppsV1().Statefulsets(namespace).Get(context.Background(), fmt.Sprintf("rfs-%s", name), metav1.GetOptions{})
 	assert.NoError(err)
 
 	listOptions := metav1.ListOptions{
-		LabelSelector: labels.FormatLabels(sentinelD.Spec.Selector.MatchLabels),
+		LabelSelector: labels.FormatLabels(sentinelS.Spec.Selector.MatchLabels),
 	}
 	sentinelPodList, err := c.k8sClient.CoreV1().Pods(namespace).List(context.Background(), listOptions)
 	assert.NoError(err)

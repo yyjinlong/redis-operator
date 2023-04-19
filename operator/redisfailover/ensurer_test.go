@@ -114,7 +114,7 @@ func TestEnsure(t *testing.T) {
 			if !test.bootstrapping || test.bootstrappingAllowSentinels {
 				mrfs.On("EnsureSentinelService", rf, mock.Anything, mock.Anything).Once().Return(nil)
 				mrfs.On("EnsureSentinelConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)
-				mrfs.On("EnsureSentinelDeployment", rf, mock.Anything, mock.Anything).Once().Return(nil)
+				mrfs.On("EnsureSentinelStatefulset", rf, mock.Anything, mock.Anything).Once().Return(nil)
 			}
 
 			mrfs.On("EnsureRedisConfigMap", rf, mock.Anything, mock.Anything).Once().Return(nil)

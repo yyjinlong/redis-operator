@@ -251,7 +251,7 @@ func TestCheckAllSlavesFromMaster(t *testing.T) {
 	assert.NoError(err)
 }
 
-func TestCheckSentinelNumberInMemoryGetDeploymentPodsError(t *testing.T) {
+func TestCheckSentinelNumberInMemoryGetStatefulSetPodsError(t *testing.T) {
 	assert := assert.New(t)
 
 	rf := generateRF()
@@ -939,7 +939,7 @@ func TestClusterRunning(t *testing.T) {
 	}
 
 	ms := &mK8SService.Services{}
-	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(allRunning, nil)
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(allRunning, nil)
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(allRunning, nil)
 	mr := &mRedisService.Client{}
 
@@ -947,11 +947,11 @@ func TestClusterRunning(t *testing.T) {
 
 	assert.True(checker.IsClusterRunning(rf))
 
-	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(allRunning, nil)
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(allRunning, nil)
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(notAllReplicas, nil)
 	assert.False(checker.IsClusterRunning(rf))
 
-	ms.On("GetDeploymentPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(notAllRunning, nil)
+	ms.On("GetStatefulSetPods", namespace, rfservice.GetSentinelName(rf)).Once().Return(notAllRunning, nil)
 	ms.On("GetStatefulSetPods", namespace, rfservice.GetRedisName(rf)).Once().Return(allRunning, nil)
 	assert.False(checker.IsClusterRunning(rf))
 

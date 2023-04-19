@@ -55,7 +55,7 @@ const (
 	redisLinkUp             = "master_link_status:up"
 	redisPort               = "6379"
 	sentinelPort            = "26379"
-	masterName              = "mymaster"
+	masterName              = "master0"
 )
 
 var (
@@ -247,6 +247,7 @@ func (c *client) MonitorRedisWithPort(ip, monitor, port, quorum, password string
 	return nil
 }
 
+// MakeMaster execute command: slaveof no one
 func (c *client) MakeMaster(ip string, port string, password string) error {
 	options := &rediscli.Options{
 		Addr:     net.JoinHostPort(ip, port),
@@ -267,6 +268,7 @@ func (c *client) MakeSlaveOf(ip, masterIP, password string) error {
 	return c.MakeSlaveOfWithPort(ip, masterIP, redisPort, password)
 }
 
+// MakeSlaveOfWithPort execute command: slaveof [ip] [port]
 func (c *client) MakeSlaveOfWithPort(ip, masterIP, masterPort, password string) error {
 	options := &rediscli.Options{
 		Addr:     net.JoinHostPort(ip, masterPort), // this is IP and Port for the RedisFailover redis

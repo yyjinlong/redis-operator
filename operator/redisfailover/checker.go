@@ -103,17 +103,20 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of redis mismatch, waiting for redis statefulset reconcile")
 		return nil
 	}
+	r.logger.Info("Check redis is running")
 
 	if !r.rfChecker.IsSentinelRunning(rf) {
 		setRedisCheckerMetrics(r.mClient, "sentinel", rf.Namespace, rf.Name, metrics.SENTINEL_REPLICA_MISMATCH, metrics.NOT_APPLICABLE, errors.New("not all replicas running"))
 		r.logger.WithField("redisfailover", rf.ObjectMeta.Name).WithField("namespace", rf.ObjectMeta.Namespace).Debugf("Number of sentinel mismatch, waiting for sentinel deployment reconcile")
 		return nil
 	}
+	r.logger.Info("Check sentinel is running")
 
 	nMasters, err := r.rfChecker.GetNumberMasters(rf)
 	if err != nil {
 		return err
 	}
+	r.logger.Infof("Get redis master number: %d", nMasters)
 
 	switch nMasters {
 	case 0:
@@ -190,6 +193,7 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 	if err != nil {
 		return err
 	}
+	r.logger.Infof("Get redis master ip: %s", master)
 
 	err = r.rfChecker.CheckAllSlavesFromMaster(master, rf)
 	setRedisCheckerMetrics(r.mClient, "redis", rf.Namespace, rf.Name, metrics.SLAVE_WRONG_MASTER, metrics.NOT_APPLICABLE, err)
@@ -211,6 +215,8 @@ func (r *RedisFailoverHandler) CheckAndHeal(rf *redisfailoverv1.RedisFailover) e
 		return err
 	}
 
+	// info ouput: master0:name=master0,status=ok,address=x.x.x.x:6379,slaves=2,sentinels=3
+	// ensure all sentinels monitor is the correct master
 	sentinels, err := r.rfChecker.GetSentinelsIPs(rf)
 	if err != nil {
 		return err

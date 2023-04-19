@@ -43,9 +43,13 @@ func (w *RedisFailoverHandler) Ensure(rf *redisfailoverv1.RedisFailover, labels 
 	}
 
 	if sentinelsAllowed {
-		if err := w.rfService.EnsureSentinelDeployment(rf, labels, or); err != nil {
+		if err := w.rfService.EnsureSentinelStatefulset(rf, labels, or); err != nil {
 			return err
 		}
+	}
+
+	if err := w.rfService.EnsurePredixyAllResources(rf, labels, or); err != nil {
+		return err
 	}
 
 	return nil

@@ -73,7 +73,7 @@ func (r *RedisFailoverChecker) CheckRedisNumber(rf *redisfailoverv1.RedisFailove
 
 // CheckSentinelNumber controlls that the number of deployed sentinel is the same than the requested on the spec
 func (r *RedisFailoverChecker) CheckSentinelNumber(rf *redisfailoverv1.RedisFailover) error {
-	d, err := r.k8sService.GetDeployment(rf.Namespace, GetSentinelName(rf))
+	d, err := r.k8sService.GetStatefulSet(rf.Namespace, GetSentinelName(rf))
 	if err != nil {
 		return err
 	}
@@ -340,13 +340,16 @@ func (r *RedisFailoverChecker) GetRedisesIPs(rf *redisfailoverv1.RedisFailover) 
 // GetSentinelsIPs returns the IPs of the Sentinel nodes
 func (r *RedisFailoverChecker) GetSentinelsIPs(rf *redisfailoverv1.RedisFailover) ([]string, error) {
 	sentinels := []string{}
-	rps, err := r.k8sService.GetDeploymentPods(rf.Namespace, GetSentinelName(rf))
+	rps, err := r.k8sService.GetStatefulSetPods(rf.Namespace, GetSentinelName(rf))
 	if err != nil {
 		return nil, err
 	}
 	for _, sp := range rps.Items {
 		if sp.Status.Phase == corev1.PodRunning && sp.DeletionTimestamp == nil { // Only work with running pods
-			sentinels = append(sentinels, sp.Status.PodIP)
+			if IsPodReady(sp) {
+				fmt.Printf("Check sentinel pod: %s is ready\n", sp.Name)
+				sentinels = append(sentinels, sp.Status.PodIP)
+			}
 		}
 	}
 	return sentinels, nil
@@ -482,7 +485,8 @@ func (r *RedisFailoverChecker) IsRedisRunning(rFailover *redisfailoverv1.RedisFa
 
 // IsSentinelRunning returns true if all the pods are Running
 func (r *RedisFailoverChecker) IsSentinelRunning(rFailover *redisfailoverv1.RedisFailover) bool {
-	dp, err := r.k8sService.GetDeploymentPods(rFailover.Namespace, GetSentinelName(rFailover))
+	dp, err := r.k8sService.GetStatefulSetPods(rFailover.Namespace, GetSentinelName(rFailover))
+	r.logger.Infof("Get Sentinel statefulset pods count:%d ", len(dp.Items))
 	return err == nil && len(dp.Items) > int(rFailover.Spec.Redis.Replicas-1) && AreAllRunning(dp)
 }
 

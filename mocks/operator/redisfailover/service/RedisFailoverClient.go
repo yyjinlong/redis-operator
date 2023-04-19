@@ -112,8 +112,8 @@ func (_m *RedisFailoverClient) EnsureSentinelConfigMap(rFailover *v1.RedisFailov
 	return r0
 }
 
-// EnsureSentinelDeployment provides a mock function with given fields: rFailover, labels, ownerRefs
-func (_m *RedisFailoverClient) EnsureSentinelDeployment(rFailover *v1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
+// EnsureSentinelStatefulset provides a mock function with given fields: rFailover, labels, ownerRefs
+func (_m *RedisFailoverClient) EnsureSentinelStatefulset(rFailover *v1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
 	ret := _m.Called(rFailover, labels, ownerRefs)
 
 	var r0 error

@@ -16,6 +16,10 @@ func (r *RedisFailover) Validate() error {
 		return fmt.Errorf("name length can't be higher than %d", maxNameLength)
 	}
 
+	if r.Spec.Sharding > 1 && r.Spec.Redis.Replicas%2 != 0 {
+		return fmt.Errorf("in multi-sharding, redis replicas must be even number(every sharding must be 1 master 1 slave)")
+	}
+
 	if r.Bootstrapping() {
 		if r.Spec.BootstrapNode.Host == "" {
 			return errors.New("BootstrapNode must include a host when provided")

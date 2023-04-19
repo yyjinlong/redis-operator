@@ -1,6 +1,10 @@
 package service
 
 import (
+	"fmt"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 
@@ -16,13 +20,14 @@ import (
 type RedisFailoverClient interface {
 	EnsureSentinelService(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureSentinelConfigMap(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
-	EnsureSentinelDeployment(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
+	EnsureSentinelStatefulset(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureRedisStatefulset(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureRedisService(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureRedisShutdownConfigMap(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureRedisReadinessConfigMap(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureRedisConfigMap(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 	EnsureNotPresentRedisService(rFailover *redisfailoverv1.RedisFailover) error
+	EnsurePredixyAllResources(rFailover *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error
 }
 
 // RedisFailoverKubeClient implements the required methods to talk with kubernetes
@@ -81,15 +86,14 @@ func (r *RedisFailoverKubeClient) EnsureSentinelConfigMap(rf *redisfailoverv1.Re
 	return err
 }
 
-// EnsureSentinelDeployment makes sure the sentinel deployment exists in the desired state
-func (r *RedisFailoverKubeClient) EnsureSentinelDeployment(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
+// EnsureSentinelStatefulset makes sure the sentinel statefulset exists in the desired state
+func (r *RedisFailoverKubeClient) EnsureSentinelStatefulset(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
 	if err := r.ensurePodDisruptionBudget(rf, sentinelName, sentinelRoleName, labels, ownerRefs); err != nil {
 		return err
 	}
-	d := generateSentinelDeployment(rf, labels, ownerRefs)
-	err := r.K8SService.CreateOrUpdateDeployment(rf.Namespace, d)
-
-	r.setEnsureOperationMetrics(d.Namespace, d.Name, "Deployment", rf.Name, err)
+	ss := generateSentinelStatefulSet(rf, labels, ownerRefs)
+	err := r.K8SService.CreateOrUpdateStatefulSet(rf.Namespace, ss)
+	r.setEnsureOperationMetrics(ss.Namespace, ss.Name, "StatefulSet", rf.Name, err)
 	return err
 }
 
@@ -186,4 +190,99 @@ func (r *RedisFailoverKubeClient) setEnsureOperationMetrics(objectNamespace stri
 		r.metricsClient.RecordEnsureOperation(objectNamespace, objectName, objectKind, ownerName, metrics.FAIL)
 	}
 	r.metricsClient.RecordEnsureOperation(objectNamespace, objectName, objectKind, ownerName, metrics.SUCCESS)
+}
+
+// EnsurePredixyAllResources make sure the sentries are all ready before starting predixy
+func (r *RedisFailoverKubeClient) EnsurePredixyAllResources(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
+	// GetSentinelsIPs returns the IPs of the Sentinel nodes
+	sentinels := []string{}
+	sps, err := r.K8SService.GetStatefulSetPods(rf.Namespace, GetSentinelName(rf))
+	if err != nil {
+		return err
+	}
+	for _, pod := range sps.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.DeletionTimestamp == nil { // Only work with running pods
+			if IsPodReady(pod) {
+				fmt.Printf("Sentinel Pod: %s is ready\n", pod.Name)
+				sentinels = append(sentinels, pod.Status.PodIP)
+			}
+		}
+	}
+
+	redisList := []string{}
+	rps, err := r.K8SService.GetStatefulSetPods(rf.Namespace, GetRedisName(rf))
+	if err != nil {
+		return err
+	}
+	for _, pod := range rps.Items {
+		if pod.Status.Phase == corev1.PodRunning && pod.DeletionTimestamp == nil { // Only work with running pods
+			if IsPodReady(pod) {
+				fmt.Printf("Redis Pod: %s is ready\n", pod.Name)
+				redisList = append(redisList, pod.Status.PodIP)
+			}
+		}
+	}
+
+	fmt.Println("Ensure predixy start get sentinels ready pods count: ", len(sentinels))
+	fmt.Println("Ensure predixy start get redis ready pods count: ", len(redisList))
+	if len(sentinels) == int(rf.Spec.Sentinel.Replicas) && len(redisList) == int(rf.Spec.Redis.Replicas) {
+		if err := r.EnsurePredixyConfigMap(rf, labels, ownerRefs, sentinels); err != nil {
+			return err
+		}
+
+		if err := r.EnsurePredixyService(rf, labels, ownerRefs); err != nil {
+			return err
+		}
+
+		// ensure sentinel bootstrap finished; ensure predixy bootstrap correctly.
+		time.Sleep(4 * time.Second)
+		if err := r.EnsurePredixyDeployment(rf, labels, ownerRefs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// IsPodReady check pod is ready
+func IsPodReady(pod corev1.Pod) bool {
+	isReady := false
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == corev1.PodReady && cond.Status == corev1.ConditionTrue {
+			isReady = true
+		}
+	}
+	return isReady
+}
+
+// EnsurePredixyConfigMap create predixy configmap
+func (r *RedisFailoverKubeClient) EnsurePredixyConfigMap(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference, sentinels []string) error {
+	// redis password
+	password, err := k8s.GetRedisPassword(r.K8SService, rf)
+	if err != nil {
+		return err
+	}
+
+	cm := generatePredixyConfigMap(rf, labels, ownerRefs, sentinels, password)
+	err = r.K8SService.CreateOrUpdateConfigMap(rf.Namespace, cm)
+	r.setEnsureOperationMetrics(cm.Namespace, cm.Name, "ConfigMap", rf.Name, err)
+	return err
+}
+
+// EnsurePredixyService create predixy service
+func (r *RedisFailoverKubeClient) EnsurePredixyService(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
+	svc := generatePredixyService(rf, labels, ownerRefs)
+	err := r.K8SService.CreateOrUpdateService(rf.Namespace, svc)
+	r.setEnsureOperationMetrics(svc.Namespace, svc.Name, "Service", rf.Name, err)
+	return nil
+}
+
+// EnsurePredixyDeployment create predixy
+func (r *RedisFailoverKubeClient) EnsurePredixyDeployment(rf *redisfailoverv1.RedisFailover, labels map[string]string, ownerRefs []metav1.OwnerReference) error {
+	if err := r.ensurePodDisruptionBudget(rf, predixyName, predixyRoleName, labels, ownerRefs); err != nil {
+		return err
+	}
+	pd := generatePredixyDeployments(rf, labels, ownerRefs)
+	err := r.K8SService.CreateOrUpdateDeployment(rf.Namespace, pd)
+	r.setEnsureOperationMetrics(pd.Namespace, pd.Name, "Deployment", rf.Name, err)
+	return nil
 }

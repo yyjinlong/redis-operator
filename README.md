@@ -18,28 +18,6 @@ All dependencies have been vendored, so there's no need to any additional downlo
 In order to create Redis failovers inside a Kubernetes cluster, the operator has to be deployed.
 It can be done with plain old [deployment](example/operator), using [Kustomize](manifests/kustomize) or with the provided [Helm chart](charts/redisoperator).
 
-### Using the Helm chart
-
-From the root folder of the project, execute the following:
-
-```
-helm repo add redis-operator https://spotahome.github.io/redis-operator
-helm repo update
-helm install redis-operator redis-operator/redis-operator
-```
-
-#### Update helm chart
-
-Helm chart only manage the creation of CRD in the first install. In order to update the CRD you will need to apply directly.
-
-```
-REDIS_OPERATOR_VERSION=v1.2.4
-kubectl replace -f https://raw.githubusercontent.com/spotahome/redis-operator/${REDIS_OPERATOR_VERSION}/manifests/databases.spotahome.com_redisfailovers.yaml
-```
-
-```
-helm upgrade redis-operator redis-operator/redis-operator
-```
 ### Using kubectl
 
 To create the operator, you can directly create it with kubectl:
@@ -51,45 +29,6 @@ kubectl apply -f https://raw.githubusercontent.com/spotahome/redis-operator/${RE
 ```
 
 This will create a deployment named `redisoperator`.
-
-### Using kustomize
-
-The kustomize setup included in this repo is highly customizable using [components](https://kubectl.docs.kubernetes.io/guides/config_management/components/),
-but it also comes with a few presets (in the form of overlays) supporting the most common use cases.
-
-To install the operator with default settings and every necessary resource (including RBAC, service account, default resource limits, etc), install the `default` overlay:
-
-```shell
-kustomize build github.com/spotahome/redis-operator/manifests/kustomize/overlays/default
-```
-
-If you would like to customize RBAC or the service account used, you can install the `minimal` overlay.
-
-Finally, you can install the `full` overlay if you want everything this operator has to offer, including Prometheus ServiceMonitor resources.
-
-It's always a good practice to pin the version of the operator in your configuration to make sure you are not surprised by changes on the latest development branch:
-
-```shell
-kustomize build github.com/spotahome/redis-operator/manifests/kustomize/overlays/default?ref=v1.2.4
-```
-
-You can easily create your own config by creating a `kustomization.yaml` file
-(for example to apply custom resource limits, to add custom labels or to customize the namespace):
-
-```yaml
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-
-namespace: redis-operator
-
-commonLabels:
-    foo: bar
-
-resources:
-  - github.com/spotahome/redis-operator/manifests/kustomize/overlays/full
-```
-
-Take a look at the manifests inside [manifests/kustomize](manifests/kustomize) for more details.
 
 ## Usage
 
@@ -108,8 +47,11 @@ This redis-failover will be managed by the operator, resulting in the following 
 - `rfr-<NAME>`: Redis statefulset
 - `rfr-<NAME>`: Redis service (if redis-exporter is enabled)
 - `rfs-<NAME>`: Sentinel configmap
-- `rfs-<NAME>`: Sentinel deployment
+- `rfs-<NAME>`: Sentinel statefulset
 - `rfs-<NAME>`: Sentinel service
+- `rfp-<NAME>`: Predixy configmap
+- `rfp-<NAME>`: Predixy service
+- `rfp-<NAME>`: Predixy deployment
 
 **NOTE**: `NAME` is the named provided when creating the RedisFailover.
 **IMPORTANT**: the name of the redis-failover to be created cannot be longer that 48 characters, due to prepend of redis/sentinel identification and statefulset limitation.
@@ -134,11 +76,11 @@ You can use the `topologySpreadContraints` to ensure the pods of a type(redis or
 
 It is possible to configure both Redis and Sentinel. This is done with the `customConfig` option inside their spec. It is a list of configurations and their values. Example are given in the [custom config example file](example/redisfailover/custom-config.yaml).
 
-In order to have the ability of this configurations to be changed "on the fly", without the need of reload the redis/sentinel processes, the operator will apply them with calls to the redises/sentinels, using `config set` or `sentinel set mymaster` respectively. Because of this, **no changes on the configmaps** will appear regarding this custom configurations and the entries of `customConfig` from Redis spec will not be written on `redis.conf` file. To verify the actual Redis configuration use [`redis-cli CONFIG GET *`](https://redis.io/commands/config-get).
+In order to have the ability of this configurations to be changed "on the fly", without the need of reload the redis/sentinel processes, the operator will apply them with calls to the redises/sentinels, using `config set` or `sentinel set master0` respectively. Because of this, **no changes on the configmaps** will appear regarding this custom configurations and the entries of `customConfig` from Redis spec will not be written on `redis.conf` file. To verify the actual Redis configuration use [`redis-cli CONFIG GET *`](https://redis.io/commands/config-get).
 
 **Important**: in the Sentinel options, there are some "conversions" to be made:
 
-- Configuration on the `sentinel.conf`: `sentinel down-after-milliseconds mymaster 2000`
+- Configuration on the `sentinel.conf`: `sentinel down-after-milliseconds master0 2000`
 - Configuration on the `configOptions`: `down-after-milliseconds 2000`
 
 **Important 2**: do **NOT** change the options used for control the redis/sentinel such as `port`, `bind`, `dir`, etc.
@@ -259,8 +201,6 @@ spec:
       readOnly: true
 ```
 
-
-
 ## Connection to the created Redis Failovers
 
 In order to connect to the redis-failover and use it, a [Sentinel-ready](https://redis.io/topics/sentinel-clients) library has to be used. This will connect through the Sentinel service to the Redis node working as a master.
@@ -269,7 +209,7 @@ The connection parameters are the following:
 ```
 url: rfs-<NAME>
 port: 26379
-master-name: mymaster
+master-name: master0
 ```
 
 ### Enabling redis auth
@@ -354,3 +294,69 @@ kubectl delete redisfailover <NAME>
 For the code documentation, you can lookup on the [GoDoc](https://godoc.org/github.com/spotahome/redis-operator).
 
 Also, you can check more deeply information on the [docs folder](docs).
+
+
+## Secondary Development
+
+### Sentinel modify Deployment to StatefulSet
+
+Unit Test
+```
+cd operator/redisfailover/service
+go test -v -test.run TestClusterRunning
+go test -v -test.run TestCheckSentinelNumberInMemoryGetStatefulSetPodsError
+go test -v -test.run TestSentinelStatefulsetCommands
+go test -v -test.run TestSentinelStartupProbe
+```
+
+### Predixy
+
+add predixy configmap、service、deployment
+
+```
+FROM centos:7.7.1908
+
+ARG timezone=Asia/Shanghai
+ARG workdir=/home/predixy
+
+ADD ./predixy.tar.gz /home
+COPY ./predixy.repo /tmp
+
+RUN rm -f /etc/yum.repos.d/* && \
+    mv /tmp/predixy.repo /etc/yum.repos.d/ && \
+    yum clean all && \
+    yum makecache fast && \
+    rpm --rebuilddb && \
+    yum install -y redis net-tools telnet which && \
+    cp -f /usr/share/zoneinfo/${timezone} /etc/localtime && \
+    chown root:root ${workdir} -R
+
+WORKDIR ${workdir}
+```
+
+### Default Image: redis:6.2.6-alpine modify timezone
+
+```
+FROM redis:6.2.6-alpine
+
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.ustc.edu.cn/g' /etc/apk/repositories && \
+    apk update && apk add --no-cache dumb-init tzdata bash && \
+    cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+```
+
+### Usage
+
+```
+# create crd and deployment operator
+kubectl create -f manifests/databases.spotahome.com_redisfailovers.yaml
+kubectl apply -f manifests/all-redis-operator-resources.yaml
+
+# create test cr
+kubectl apply -f example/basic.yaml
+
+# with namespace
+kubectl create namespace redis-system
+kubectl apply -f example/basic_full.yaml
+```
+
