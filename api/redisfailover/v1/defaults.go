@@ -12,7 +12,7 @@ const (
 var (
 	defaultSentinelCustomConfig = []string{
 		"down-after-milliseconds 5000",
-		"failover-timeout 10000",
+		"failover-timeout 60000",
 	}
 	defaultRedisCustomConfig = []string{
 		"replica-priority 100",

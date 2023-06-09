@@ -21,7 +21,7 @@ spec:
       imagePullSecrets:
       - name: harborkey
       containers:
-        - image: 10.12.28.4:80/service/redis-operator:1.1.1
+        - image: 10.12.28.4:80/service/redis-operator:1.1.4
           imagePullPolicy: IfNotPresent
           name: app
           securityContext:

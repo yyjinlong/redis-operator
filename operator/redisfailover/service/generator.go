@@ -39,8 +39,8 @@ rename-command "{{.From}}" "{{.To}}"
 `
 
 	sentinelConfigTemplate = `sentinel monitor master0 127.0.0.1 {{.Spec.Redis.Port}} 2
-sentinel down-after-milliseconds master0 1000
-sentinel failover-timeout master0 3000
+sentinel down-after-milliseconds master0 5000
+sentinel failover-timeout master0 60000
 sentinel parallel-syncs master0 2
 logfile /log/sentinel.log`
 
@@ -272,7 +272,7 @@ func generateRedisShutdownConfigMap(rf *redisfailoverv1.RedisFailover, labels ma
 	shutdownContent := fmt.Sprintf(`master=$(redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} --csv SENTINEL get-master-addr-by-name master0 | tr ',' ' ' | tr -d '\"' |cut -d' ' -f1)
 if [ "$master" = "$(hostname -i)" ]; then
   redis-cli -h ${RFS_%[1]v_SERVICE_HOST} -p ${RFS_%[1]v_SERVICE_PORT_SENTINEL} SENTINEL failover master0
-  sleep 31
+  sleep 1
 fi
 cmd="redis-cli -p %[2]v"
 if [ ! -z "${REDIS_PASSWORD}" ]; then
@@ -1106,8 +1106,9 @@ func getRedisCommand(rf *redisfailoverv1.RedisFailover) []string {
 		return rf.Spec.Redis.Command
 	}
 	return []string{
-		"redis-server",
-		fmt.Sprintf("/redis/%s", redisConfigFileName),
+		"/bin/sh",
+		"-c",
+		fmt.Sprintf("sleep 15 && redis-server /redis/%s", redisConfigFileName),
 	}
 }
 

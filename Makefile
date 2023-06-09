@@ -15,5 +15,5 @@ image:
 help:
 
 	@echo "make manifest 之后: vimdiff /opt/databases.spotahome.com_redisfailovers.yaml manifests/databases.spotahome.com_redisfailovers.yaml"
-	@echo "make image IMAGE_PATH=10.12.28.4:80/service/redis-operator IMAGE_VERSION=1.1.1"
+	@echo "make image IMAGE_PATH=10.12.28.4:80/service/redis-operator IMAGE_VERSION=1.1.4"
 
