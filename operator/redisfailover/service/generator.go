@@ -24,9 +24,71 @@ const (
 port {{.Spec.Redis.Port}}
 maxmemory {{.Spec.Redis.MaxMemory}}
 logfile /log/redis.log
-tcp-keepalive 60
-save 900 1
-save 300 10
+
+#客户端闲置多长时间后关闭连接，如果指定为0，表示关闭该功能
+timeout 0
+
+#客户端连接状态监测
+tcp-keepalive 0
+
+#保存数据库快照信息到磁盘,900秒内有1个key被改变
+#关闭，当角色转换到slave时，由脚本触发
+save ""
+
+stop-writes-on-bgsave-error yes
+rdbcompression yes
+rdbchecksum yes
+
+#当slave服务器和master服务器失去连接后, 或者当数据正在复制传输的时候
+#如果此参数值设置"yes", slave服务器可以继续接受客户端的请求
+slave-serve-stale-data yes
+
+slave-read-only no
+
+#若配置为"no", 表明启用NO_DELAY,实时同步
+repl-disable-tcp-nodelay no
+
+#默认关闭aof, 作为slave时由脚本开启
+appendonly no
+appendfilename "appendonly.aof"
+appendfsync everysec
+
+no-appendfsync-on-rewrite no
+aof-rewrite-incremental-fsync yes
+
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+
+lua-time-limit 5000
+
+slowlog-log-slower-than 10000
+slowlog-max-len 1000
+
+notify-keyspace-events ""
+
+hash-max-ziplist-entries 512
+hash-max-ziplist-value 64
+
+list-max-ziplist-entries 512
+list-max-ziplist-value 64
+
+set-max-intset-entries 512
+
+zset-max-ziplist-entries 128
+zset-max-ziplist-value 64
+
+activerehashing yes
+
+client-output-buffer-limit normal 0 0 0
+client-output-buffer-limit slave 7051978kb 256mb 3600
+client-output-buffer-limit pubsub 32mb 8mb 60
+
+maxmemory-policy volatile-lru
+
+hz 10
+
+maxclients 4064
+
 user pinger -@all +ping on >pingpass
 rename-command keys ""
 rename-command flushall ""
@@ -51,7 +113,7 @@ logfile /log/sentinel.log`
 Bind 0.0.0.0:12120
 WorkerThreads 12
 MaxMemory 1G
-ClientTimeout 300
+ClientTimeout 0
 Log /home/predixy/logs/predixy.log
 LogRotate 1d
 LogVerbSample 0
@@ -75,7 +137,7 @@ Include auth.conf`
     ServerTimeout 1
     ServerFailureLimit 10
     ServerRetryTimeout 1
-    KeepAlive 120
+    KeepAlive 0
     Password {{ .RedisPassword }}
     Sentinels {
     {{- range .SentinelIPs }}
